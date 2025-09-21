@@ -1,0 +1,15 @@
+url	title	date	type	author
+https://www.pinecone.io/learn/retrieval-augmented-generation/	Retrieval-Augmented Generation (RAG)	6/12/2025	blog	Pinecone
+https://www.pinecone.io/learn/chunking-strategies/	Chunking Strategies for LLM Applications	6/28/2025	blog	Pinecone
+https://weaviate.io/blog/introduction-to-rag	Introduction to Retrieval Augmented Generation (RAG)	10/15/2024	blog	Weaviate
+https://weaviate.io/blog/chunking-strategies-for-rag	Chunking Strategies to Improve Your RAG Performance	9/4/2025	blog	Weaviate
+https://blog.langchain.com/deconstructing-rag/	Deconstructing RAG	11/30/2023	blog	LangChain
+https://haystack.deepset.ai/blog/extracting-metadata-filter	Advanced Retrieval: Extract Metadata from Queries to Improve Retrieval	5/13/2024	blog	Haystack
+https://haystack.deepset.ai/blog/query-expansion	Advanced RAG: Query Expansion	8/14/2024	blog	Haystack
+https://haystack.deepset.ai/blog/query-decomposition	Advanced RAG: Query Decomposition & Reasoning	9/30/2024	blog	Haystack
+https://haystack.deepset.ai/cookbook/metadata_enrichment	Advanced RAG: Automated Structured Metadata Enrichment	4/11/2025	blog	Haystack
+https://docs.cohere.com/docs/retrieval-augmented-generation-rag	Retrieval Augmented Generation (RAG)	3/1/2025	blog	Cohere
+https://docs.cohere.com/docs/rag-citations	RAG Citations	3/1/2025	blog	Cohere
+https://docs.cohere.com/page/chunking-strategies	Effective Chunking Strategies for RAG	3/1/2025	blog	Cohere
+https://www.datacamp.com/blog/the-top-5-vector-databases	The Top 7 Vector Databases in 2025	1/18/2025	blog	DataCamp
+https://www.anthropic.com/engineering/contextual-retrieval	Introducing Contextual Retrieval	9/19/2024	blog	Anthropic
