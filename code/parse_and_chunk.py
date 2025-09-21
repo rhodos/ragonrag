@@ -1,6 +1,6 @@
 import argparse
 import json
-import os
+#import os
 from pathlib import Path
 import uuid
 from typing import List, Dict
@@ -106,7 +106,10 @@ def main():
     if inp.is_dir():
         pdfs = sorted(inp.glob("*.pdf"))
         for pdf in tqdm(pdfs, desc="PDFs"):
-            items.extend(process_pdf_file(pdf, args.max_words, args.overlap))
+            try:
+                items.extend(process_pdf_file(pdf, args.max_words, args.overlap))
+            except Exception as e:
+                print(f"Warning: failed to process {pdf}: {e}")
     elif inp.is_file() and inp.suffix.lower() == ".pdf":
         items.extend(process_pdf_file(inp, args.max_words, args.overlap))
     elif inp.is_file():
