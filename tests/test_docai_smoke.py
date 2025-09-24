@@ -1,31 +1,45 @@
 """Smoke test for the Google Document AI prototype.
 
-This test is intentionally guarded: it will be skipped unless the environment is configured
-with `GOOGLE_APPLICATION_CREDENTIALS` and the `google-cloud-documentai` client is installed.
+This test is intentionally guarded: it will be skipped unless the environment is configured with `GOOGLE_APPLICATION_CREDENTIALS` and the `google-cloud-documentai` client is installed.
 
 Run locally after configuring the service account and creating a Document AI processor.
 """
 import os
 import tempfile
 from pathlib import Path
+import logging
+from src import docai_prototype
 
 import pytest
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s %(message)s")
 
 
 def has_docai_client():
     try:
         import google.cloud.documentai_v1 as _
+        logger.debug("google-cloud-documentai is installed")
         return True
     except Exception:
+        logger.debug("google-cloud-documentai is NOT installed")
+        return False
+    
+def google_credentials_set():
+    creds = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if creds:
+        logger.debug("GOOGLE_APPLICATION_CREDENTIALS is set")
+        return True
+    else:
+        logger.debug("GOOGLE_APPLICATION_CREDENTIALS is NOT set")
         return False
 
-
 @pytest.mark.skipif(
-    not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or not has_docai_client(),
+    not google_credentials_set() or not has_docai_client(),
     reason="Document AI not configured or client library not installed",
 )
 def test_docai_smoke_runs_and_writes_jsonl():
-    from src import docai_prototype
+
 
     # Use a small, representative PDF from the repo
     pdf = Path("data/raw/papers/NeurIPS-2020-retrieval-augmented-generation-for-knowledge-intensive-nlp-tasks-Paper.pdf")

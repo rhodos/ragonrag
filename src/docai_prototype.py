@@ -1,12 +1,10 @@
 """Small prototype for using Google Document AI to parse PDFs and output structured JSONL.
 
-This script is intentionally minimal and synchronous for small PDFs. It expects the
-environment variable GOOGLE_APPLICATION_CREDENTIALS to point to a service account JSON key
-with permission to call the Document AI processor you create in your Google Cloud project.
+This script is intentionally minimal and synchronous for small PDFs. It expects the environment variable GOOGLE_APPLICATION_CREDENTIALS to point to a service account JSON key with permission to call the Document AI processor you create in your Google Cloud project. It also expects the environment variable DOCAI_PROCESSOR_NAME to be set to the full resource name of your processor, e.g.:
+  projects/PROJECT_ID/locations/LOCATION/processors/PROCESSOR_ID
 
 Usage (example):
   python -m src.docai_prototype \
-    --processor-name projects/PROJECT_ID/locations/LOCATION/processors/PROCESSOR_ID \
     --input data/raw/papers/NeurIPS-2020-retrieval-augmented-generation-for-knowledge-intensive-nlp-tasks-Paper.pdf \
     --out data/processed/docai_example.jsonl
 
@@ -21,12 +19,27 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List
+import os
+from dotenv import load_dotenv
 
 from google.cloud import documentai_v1 as documentai
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s %(message)s")
 
+load_dotenv()
+
+if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+    logger.warning(
+        "GOOGLE_APPLICATION_CREDENTIALS not set in environment. "
+        "Document AI client will fail if credentials aren't provided via other means."
+    )
+
+if not os.environ.get("DOCAI_PROCESSOR_NAME"):
+    logger.warning(
+        "DOCAI_PROCESSOR_NAME not set in environment. "
+        "Document AI client will fail if processor name isn't provided via other means."
+    )
 
 @dataclass
 class Block:
@@ -74,7 +87,8 @@ def process_pdf_sync(processor_name: str, path: Path) -> List[Block]:
 
         for b in candidates:
             text = get_text_for_anchor(doc, b.layout.text_anchor)
-            bbox = [v.to_dict() for v in b.layout.bounding_poly.normalized_vertices]
+            verts = getattr(b.layout.bounding_poly, "normalized_vertices", []) or []
+            bbox = [_vertex_to_dict(v) for v in verts]
             blocks.append(Block(page=page_num, bbox=bbox, text=text))
 
     # Optionally sort by page, top->left using bbox centroid
@@ -85,6 +99,45 @@ def process_pdf_sync(processor_name: str, path: Path) -> List[Block]:
 
     blocks.sort(key=lambda b: (b.page, *centroid_yx(b.bbox)))
     return blocks
+
+def _vertex_to_dict(v):
+    return {"x": float(v.x), "y": float(v.y)}
+
+# # normalized_vertices can be different types depending on the client/runtime:
+# # - protobuf message with to_dict()
+# # - an object with .x and .y attributes
+# # - a plain mapping/dict
+# def _vertex_to_dict(v):
+#     try:
+#         # some client objects expose to_dict()
+#         if hasattr(v, "to_dict"):
+#             logger.debug('Using to_dict() for vertex')
+#             return v.to_dict()
+#     except Exception:
+#         pass
+#     # proto-like objects often have .x and .y
+#     if hasattr(v, "x") and hasattr(v, "y"):
+#         try:
+#             logger.debug('Using .x and .y attributes for vertex')
+#             return {"x": float(v.x), "y": float(v.y)}
+#         except Exception:
+#             return {"x": v.x, "y": v.y}
+#     # mapping-like
+#     if hasattr(v, "get"):
+#         x = v.get("x")
+#         y = v.get("y")
+#         logger.debug('Using .get() for vertex')
+#         if x is not None and y is not None:
+#             return {"x": float(x), "y": float(y)}
+#     # last resort: try to use __dict__ or string
+#     try:
+#         d = dict(v.__dict__)
+#         if "x" in d and "y" in d:
+#             return {"x": d.get("x"), "y": d.get("y")}
+#     except Exception:
+#         pass
+#     # Give up and return a string representation to avoid crashes
+#     return {"x": None, "y": None, "raw": str(v)}
 
 
 def blocks_to_jsonl(blocks: List[Block], out_path: Path):
@@ -98,9 +151,8 @@ def main():
     import argparse
 
     p = argparse.ArgumentParser()
-    p.add_argument("--processor-name", required=True, help="Document AI processor resource name")
-    p.add_argument("--input", required=True, help="Path to input PDF")
-    p.add_argument("--out", required=True, help="Output JSONL path")
+    p.add_argument("--input", default='data/raw/papers/2020.emnlp-main.550.pdf', help="Path to input PDF")
+    p.add_argument("--out", default='data/processed/docai_example.jsonl', help="Output JSONL path")
     args = p.parse_args()
 
     inp = Path(args.input)
@@ -108,8 +160,13 @@ def main():
     if not inp.exists():
         logger.error("Input not found: %s", inp)
         raise SystemExit(2)
+    
+    processor_name = os.environ.get("DOCAI_PROCESSOR_NAME")
+    if not processor_name:
+        logger.error("Set DOCAI_PROCESSOR_NAME environment variable to your Document AI processor name")
+        raise SystemExit(2)
 
-    blocks = process_pdf_sync(args.processor_name, inp)
+    blocks = process_pdf_sync(processor_name, inp)
     blocks_to_jsonl(blocks, out)
     logger.info("Wrote %d blocks to %s", len(blocks), out)
 
