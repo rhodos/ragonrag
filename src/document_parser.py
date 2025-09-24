@@ -144,7 +144,7 @@ def scrape_url(url: str) -> str:
     text = "\n".join(line.strip() for line in text.splitlines() if line.strip())
     return text
 
-def process_pdf_file(path: Path, max_words: int, overlap: int) -> List[Dict]:
+def process_pdf_file_pdfplumber(path: Path, max_words: int, overlap: int) -> List[Dict]:
     text = parse_pdf(path)
     chunks = chunk_text(text, max_words=max_words, overlap=overlap)
     out = []
@@ -183,7 +183,7 @@ def write_jsonl(items: List[Dict], out_path: Path):
 
 def main():
     p = argparse.ArgumentParser(description="Parse PDFs and scrape URLs into JSONL chunks")
-    p.add_argument("--input", required=True, help="PDF file, folder of PDFs, or text file of URLs")
+    p.add_argument("--input", required=True, help="PDF file, folder of PDFs, or text file of URLs and metadata")
     p.add_argument("--out", required=True, help="Output JSONL file")
     p.add_argument("--max-words", type=int, default=250, help="Approx words per chunk")
     p.add_argument("--overlap", type=int, default=50, help="Word overlap between chunks")
@@ -196,11 +196,11 @@ def main():
         pdfs = sorted(inp.glob("*.pdf"))
         for pdf in tqdm(pdfs, desc="PDFs"):
             try:
-                items.extend(process_pdf_file(pdf, args.max_words, args.overlap))
+                items.extend(process_pdf_file_pdfplumber(pdf, args.max_words, args.overlap))
             except Exception as e:
                 print(f"Warning: failed to process {pdf}: {e}")
     elif inp.is_file() and inp.suffix.lower() == ".pdf":
-        items.extend(process_pdf_file(inp, args.max_words, args.overlap))
+        items.extend(process_pdf_file_pdfplumber(inp, args.max_words, args.overlap))
     elif inp.is_file() and inp.suffix.lower() == ".tsv":
         file_data = pd.read_csv(inp, sep="\t")
         #with inp.open() as f:

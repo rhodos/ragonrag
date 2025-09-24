@@ -21,6 +21,11 @@ from pathlib import Path
 from typing import List
 import os
 from dotenv import load_dotenv
+import argparse
+from tqdm import tqdm
+import pandas as pd
+import io
+from pypdf import PdfReader, PdfWriter
 
 from google.cloud import documentai_v1 as documentai
 
@@ -46,6 +51,7 @@ class Block:
     page: int
     bbox: dict
     text: str
+    metadata: dict = None
 
 
 def get_text_for_anchor(document: documentai.Document, text_anchor) -> str:
@@ -59,39 +65,50 @@ def get_text_for_anchor(document: documentai.Document, text_anchor) -> str:
     return "".join(out)
 
 
-def process_pdf_sync(processor_name: str, path: Path) -> List[Block]:
+def process_small_pdf(client, processor_name: str, pdf_name: str, pdf_bytes, metadata=None, page_number=None) -> List[Block]:
     """Process a PDF via Document AI sync API and return ordered blocks.
 
     Returns a list of Block(page, bbox, text). Bbox is normalized vertices list.
     """
-    client = documentai.DocumentProcessorServiceClient()
-    with open(path, "rb") as f:
-        pdf_bytes = f.read()
+    # with open(pdf_path, "rb") as f:
+    #     pdf_bytes = f.read()
 
     raw_doc = {"content": pdf_bytes, "mime_type": "application/pdf"}
     request = {"name": processor_name, "raw_document": raw_doc}
 
-    logger.info("Sending %s to Document AI processor %s", path, processor_name)
+    logger.info(f"Sending {pdf_name} to Document AI processor {processor_name}")
     result = client.process_document(request=request)
     doc = result.document
 
     blocks: List[Block] = []
+    num_pages = len(doc.pages)
+    logger.info(f"Document AI returned {num_pages} pages for {pdf_name}")
+
     for p in doc.pages:
-        page_num = int(p.page_number)
+        
+        if not page_number:
+            page_num = int(p.page_number)
+            if num_pages == 1:
+                logger.warning(f"Single-page document {pdf_name}, did you forget to pass page_number param?")
+        else:
+            page_num = page_number
+        
         # Use blocks and paragraphs where available, fallback to lines
         candidates = list(p.blocks or [])
         if not candidates:
+            logger.warning(f"No blocks found on page {page_num} of {pdf_name}, falling back to paragraphs")
             candidates = list(p.paragraphs or [])
         if not candidates:
+            logger.warning(f"No paragraphs found on page {page_num} of {pdf_name}, falling back to lines")
             candidates = list(p.lines or [])
 
         for b in candidates:
             text = get_text_for_anchor(doc, b.layout.text_anchor)
             verts = getattr(b.layout.bounding_poly, "normalized_vertices", []) or []
             bbox = [_vertex_to_dict(v) for v in verts]
-            blocks.append(Block(page=page_num, bbox=bbox, text=text))
+            blocks.append(Block(page=page_num, bbox=bbox, text=text, metadata=metadata))
 
-    # Optionally sort by page, top->left using bbox centroid
+    # Sort by page, top->left using bbox centroid
     def centroid_yx(bb):
         ys = [v.get("y", 0) for v in bb]
         xs = [v.get("x", 0) for v in bb]
@@ -102,6 +119,39 @@ def process_pdf_sync(processor_name: str, path: Path) -> List[Block]:
 
 def _vertex_to_dict(v):
     return {"x": float(v.x), "y": float(v.y)}
+
+
+def process_pdf(processor_name: str, pdf_path: Path, metadata: dict=None, maxpages: int=15) -> List[Block]:
+
+    # If the PDF is large, some Document AI sync endpoints may fail; for robustness,
+    # split into single-page PDFs and call the API per page when necessary.
+
+    client = documentai.DocumentProcessorServiceClient()
+
+    reader = PdfReader(str(pdf_path))
+    page_count = len(reader.pages)
+
+
+    if page_count <= maxpages:
+        with open(pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+        blocks = process_small_pdf(client=client, processor_name=processor_name, pdf_name=str(pdf_path), pdf_bytes=pdf_bytes, metadata=metadata)
+    elif page_count > maxpages:
+        logger.info("Large PDF (%d pages) detected; splitting into single-page requests", page_count)
+        
+        blocks: List[Block] = []
+        # iterate pages and process each as a separate PDF in-memory
+        for i in range(page_count):
+            writer = PdfWriter()
+            writer.add_page(reader.pages[i])
+            buf = io.BytesIO()
+            writer.write(buf)
+            buf.seek(0)
+            pdf_bytes = buf.read()
+            blocks.extend(process_small_pdf(client=client, processor_name=processor_name, pdf_name=str(pdf_path), pdf_bytes=pdf_bytes, metadata=metadata, page_number=i+1))
+    
+    return blocks
+
 
 # # normalized_vertices can be different types depending on the client/runtime:
 # # - protobuf message with to_dict()
@@ -140,34 +190,65 @@ def _vertex_to_dict(v):
 #     return {"x": None, "y": None, "raw": str(v)}
 
 
-def blocks_to_jsonl(blocks: List[Block], out_path: Path):
+def blocks_to_jsonl(blocks: List[Block], out_path: Path, write_bbox: bool=False):
     with out_path.open("w", encoding="utf-8") as fh:
         for b in blocks:
-            json.dump({"page": b.page, "bbox": b.bbox, "text": b.text}, fh, ensure_ascii=False)
+            if write_bbox:
+                json.dump({"page": b.page, "bbox": b.bbox, "text": b.text, "metadata": b.metadata}, fh, ensure_ascii=False)
+            else:
+                json.dump({"page": b.page, "text": b.text, "metadata": b.metadata}, fh, ensure_ascii=False)
             fh.write("\n")
 
-
-def main():
-    import argparse
-
-    p = argparse.ArgumentParser()
-    p.add_argument("--input", default='data/raw/papers/2020.emnlp-main.550.pdf', help="Path to input PDF")
-    p.add_argument("--out", default='data/processed/docai_example.jsonl', help="Output JSONL path")
-    args = p.parse_args()
-
-    inp = Path(args.input)
-    out = Path(args.out)
-    if not inp.exists():
-        logger.error("Input not found: %s", inp)
-        raise SystemExit(2)
-    
+def get_processor_name():
     processor_name = os.environ.get("DOCAI_PROCESSOR_NAME")
     if not processor_name:
         logger.error("Set DOCAI_PROCESSOR_NAME environment variable to your Document AI processor name")
         raise SystemExit(2)
+    return processor_name
 
-    blocks = process_pdf_sync(processor_name, inp)
-    blocks_to_jsonl(blocks, out)
+
+def main():
+
+
+    p = argparse.ArgumentParser()
+    p.add_argument("--input", default='data/raw/papers/2020.emnlp-main.550.pdf', help="Path to input PDF, directory containing PDFs, or TSV file of PDF paths and corresponding metadata")
+    p.add_argument("--out", default='data/processed/docai_example.jsonl', help="Output JSONL path")
+    args = p.parse_args()
+
+    inp = Path(args.input)
+    if not inp.exists():
+        logger.error("Input not found: %s", inp)
+        raise SystemExit(2)
+    out = Path(args.out)
+    
+    processor = get_processor_name()
+    
+    blocks = []
+
+    if inp.is_dir():
+        pdfs = sorted(inp.glob("*.pdf"))
+        for pdf in tqdm(pdfs, desc="PDFs"):
+            try:
+                blocks.extend(process_pdf(processor_name=processor, pdf_path=Path(pdf)))
+            except Exception as e:
+                print(f"Warning: failed to process {pdf}: {e}")
+    elif inp.is_file() and inp.suffix.lower() == ".pdf":
+        blocks.extend(process_pdf(processor_name=processor, pdf_path=inp))
+    elif inp.is_file() and inp.suffix.lower() == ".tsv":
+        file_data = pd.read_csv(inp, sep="\t")
+        #with inp.open() as f:
+        #    urls = [ln.strip() for ln in f if ln.strip()]
+        for i, row in tqdm(file_data.iterrows(), desc="PDFs"):
+            pdf = row['pdf']  # assuming the TSV has a column named 'pdf'
+            try:
+                blocks.extend(process_pdf(processor_name=processor, pdf_path=Path(pdf), metadata=row.to_dict()))
+            except Exception as e:
+                print(f"Warning: failed to process pdf {pdf}: {e}")
+    else:
+        raise SystemExit("Input must be a PDF, a folder, or a tsv file with PDFs and metadata")
+
+    #blocks = process_pdf_sync(processor_name, inp)
+    blocks_to_jsonl(blocks, out, write_bbox=False)
     logger.info("Wrote %d blocks to %s", len(blocks), out)
 
 
