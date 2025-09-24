@@ -10,6 +10,7 @@ import requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 import logging
+from logging.handlers import RotatingFileHandler
 
 # Configure module-level logger
 LOG_DIR = Path("logs")
@@ -23,7 +24,8 @@ logger.setLevel(logging.DEBUG)
 if not logger.handlers:
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-    fh = logging.FileHandler(LOG_FILE, encoding="utf-8")
+    # rotate at 5MB with 3 backups
+    fh = RotatingFileHandler(LOG_FILE, maxBytes=5_000_000, backupCount=3, encoding="utf-8")
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(fmt)
     logger.addHandler(fh)
@@ -55,41 +57,63 @@ def parse_pdf(path: Path) -> str:
 def fetch_url(url: str, max_retries: int = 3) -> requests.Response:
     # Try with a browser-like User-Agent. If we get a 403, retry once with
     # an alternate UA and a Referer header to improve chances.
-    default_ua = (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-    )
-    fallback_ua = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-    )
-
-    attempts = [
-        {"User-Agent": default_ua},
-        {"User-Agent": fallback_ua, "Referer": url},
-    ]
+    user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 
     resp = None
-    for i, hdrs in enumerate(attempts, start=1):
-        try:
-            logger.debug(f"Requesting {url} (attempt {i}) with UA={hdrs.get('User-Agent')}")
-            resp = requests.get(url, timeout=15, headers=hdrs)
-            if resp.status_code == 403:
-                logger.warning(f"Received 403 for {url} on attempt {i} with UA={hdrs.get('User-Agent')}")
-                resp = None
-                continue
-            resp.raise_for_status()
-            break
-        except requests.RequestException as e:
-            logger.warning(f"Request attempt {i} for {url} failed: {e}")
-            resp = None
-            continue
+    try:
+        logger.debug(f"Requesting {url}")
+        resp = requests.get(url, timeout=15, headers={"User-Agent": user_agent})
+        if resp.status_code == 403:
+            logger.warning(f"Received 403 for {url}")
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        logger.warning(f"Request for {url} failed: {e}")
 
     if resp is None:
         # let the exception bubble up with a clear message
-        raise requests.HTTPError(f"Failed to fetch {url} after {len(attempts)} attempts (likely 403 or network error)")
+        raise requests.HTTPError(f"Failed to fetch {url} (likely 403 or network error)")
     
     return resp
+
+def mark_code_blocks(soup: BeautifulSoup, url: str) -> None:
+    # collect common code-like elements: <pre>, <code>, and any element with class 'code'
+    code_candidates = []
+    code_candidates.extend(soup.find_all(["code"]))
+    code_candidates.extend(soup.find_all(class_="code"))
+
+    # deduplicate by object id (BeautifulSoup returns the same Tag objects)
+    seen = set()
+    unique_codes = []
+    for el in code_candidates:
+        if el is None:
+            continue
+        if id(el) in seen:
+            continue
+        seen.add(id(el))
+        unique_codes.append(el)
+
+    for code in unique_codes:
+        try:
+            full_text = code.get_text() or ""
+        except Exception:
+            full_text = ""
+
+        # determine if this is a multi-line block worth marking
+        is_multiline = "\n" in full_text or len(full_text.splitlines()) > 1
+        preview = (full_text or repr(code))[:200]
+        logger.debug(f"Inferred code-like element in {url}: {preview}...")
+
+        if not is_multiline:
+            logger.debug("Skipping single-line/inline code element (no block markers added).")
+            continue
+
+        logger.debug(f"Marking multi-line code block in {url}: {preview[:120]}...")
+        logger.debug(f"Code before insertion: {repr(code)[:200]}")
+        # insert simple markers around the code block so get_text preserves them
+        code.insert_before("\n\n[CODEBLOCK]\n")
+        code.insert_after("\n\n[/CODEBLOCK]\n")
+        logger.debug("Inserted code markers around element.")
+
 
 # TODO: Improve scraping to remove ads, include numbers in numbered lists, and either annotate figure captions as such, or remove them. 
 def scrape_url(url: str) -> str:
@@ -103,7 +127,7 @@ def scrape_url(url: str) -> str:
 
     # prefer <article> if available
     article = None
-    for cls in ["article", "main-content", "post-content", "article-content", "content"]:
+    for cls in ["article", "main", "main-content", "post-content", "article-content", "content"]:
         article = soup.find(class_=cls)
         if article:
             logger.info(f"Found article by class '{cls}' for {url}")
@@ -112,11 +136,8 @@ def scrape_url(url: str) -> str:
         logger.warning(f"No article tag found for {url}, using full page.")
     base = article if article else soup
 
-    # preserve code blocks (pre/code) by marking them
-    for code in base.find_all(["pre", "code"]):
-        logger.debug(f"Inferred code block in {url}: {code.get_text()[:30]}...")
-        code.insert_before("\n\n[CODEBLOCK]\n")
-        code.insert_after("\n\n[/CODEBLOCK]\n")
+    mark_code_blocks(base, url)
+    
     text = base.get_text(separator="\n")
 
     # collapse whitespace
