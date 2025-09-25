@@ -1,0 +1,14 @@
+pdf_path	title	date	type	author	reference_page
+data/raw/papers/2020.emnlp-main.550.pdf	Dense Passage Retrieval for Open-Domain Question Answering	11/16/2020	pdf	Karpukhin et al	9
+data/raw/papers/2024.emnlp-main.981.pdf	Searching for Best Practices in Retrieval-Augmented Generation	11/12/2024	pdf	Wang et al	10
+data/raw/papers/2212.10496v1.pdf	Precise Zero-Shot Dense Retrieval without Relevance Labels	12/20/2022	pdf	Gao et al	7
+data/raw/papers/2310.11511v1.pdf	Self-RAG: Learning To Retrieve, Generate, And Critique Through Self-Reflection	10/17/2023	pdf	Asai et al	11
+data/raw/papers/2312.10997v5.pdf	Retrieval-Augmented Generation for Large Language Models: A Survey	3/27/2024	pdf	Gao et al	17
+data/raw/papers/2401.05856v1.pdf	Seven Failure Points When Engineering a Retrieval Augmented Generation System	1/11/2024	pdf	Barnett et al	6
+data/raw/papers/2401.14887v4.pdf	The Power of Noise: Redefining Retrieval for RAG Systems	5/1/2024	pdf	Cuconaso et al	10
+data/raw/papers/2401.15884v3.pdf	Corrective Retrieval Augmented Generation	10/7/2024	pdf	Yan et al	10
+data/raw/papers/2402.01763v1.pdf	When Large Language Models Meet Vector Databases: A Survey	1/30/2024	pdf	Jing et al	8
+data/raw/papers/29728-Article Text-33782-1-2-20240324.pdf	Benchmarking Large Language Models in Retrieval-Augmented Generation	2/20/2024	pdf	Chen et al	8
+data/raw/papers/3637528.3671470.pdf	A Survey on RAG Meeting LLMs: Towards Retrieval-Augmented Large Language Models	8/25/2024	pdf	Fan et al	9
+data/raw/papers/NeurIPS-2020-retrieval-augmented-generation-for-knowledge-intensive-nlp-tasks-Paper.pdf	Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks	12/6/2020	pdf	Lewis et al	10
+data/raw/papers/2024-05-EB-A_Compact_GuideTo_RAG.pdf	A Compact Guide to Retrieval Augmented Generation (RAG)	5/1/2024	pdf	Databricks	N/A

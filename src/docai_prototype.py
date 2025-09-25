@@ -17,8 +17,8 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from typing import Optional, Dict, Any, List, Tuple
 from pathlib import Path
-from typing import List
 import os
 from dotenv import load_dotenv
 import argparse
@@ -34,24 +34,13 @@ logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s %(mes
 
 load_dotenv()
 
-if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
-    logger.warning(
-        "GOOGLE_APPLICATION_CREDENTIALS not set in environment. "
-        "Document AI client will fail if credentials aren't provided via other means."
-    )
-
-if not os.environ.get("DOCAI_PROCESSOR_NAME"):
-    logger.warning(
-        "DOCAI_PROCESSOR_NAME not set in environment. "
-        "Document AI client will fail if processor name isn't provided via other means."
-    )
-
 @dataclass
 class Block:
     page: int
     bbox: dict
     text: str
-    metadata: dict = None
+    doc: str
+    metadata: Optional[Dict[str, Any]] = None
 
 
 def get_text_for_anchor(document: documentai.Document, text_anchor) -> str:
@@ -65,7 +54,7 @@ def get_text_for_anchor(document: documentai.Document, text_anchor) -> str:
     return "".join(out)
 
 
-def process_small_pdf(client, processor_name: str, pdf_name: str, pdf_bytes, metadata=None, page_number=None) -> List[Block]:
+def process_small_pdf(client, processor_name: str, pdf_name: str, pdf_bytes, metadata=None, page_number=None) -> Tuple[List[Block], bool]:
     """Process a PDF via Document AI sync API and return ordered blocks.
 
     Returns a list of Block(page, bbox, text). Bbox is normalized vertices list.
@@ -106,7 +95,7 @@ def process_small_pdf(client, processor_name: str, pdf_name: str, pdf_bytes, met
             text = get_text_for_anchor(doc, b.layout.text_anchor)
             verts = getattr(b.layout.bounding_poly, "normalized_vertices", []) or []
             bbox = [_vertex_to_dict(v) for v in verts]
-            blocks.append(Block(page=page_num, bbox=bbox, text=text, metadata=metadata))
+            blocks.append(Block(page=page_num, bbox=bbox, text=text, metadata=metadata, doc=pdf_name))
 
     # Sort by page, top->left using bbox centroid
     def centroid_yx(bb):
@@ -115,10 +104,36 @@ def process_small_pdf(client, processor_name: str, pdf_name: str, pdf_bytes, met
         return (sum(ys) / len(ys), sum(xs) / len(xs))
 
     blocks.sort(key=lambda b: (b.page, *centroid_yx(b.bbox)))
-    return blocks
+
+    (idx, ref_found) = _look_for_references_block(blocks)
+    if ref_found:
+        logger.info(f"Found References section starting at block index {idx} in document {pdf_name}")
+        blocks = blocks[:idx]  # truncate at References
+    else:
+        logger.info(f"No References section found in document {pdf_name}")
+
+    return (blocks, ref_found)
 
 def _vertex_to_dict(v):
     return {"x": float(v.x), "y": float(v.y)}
+
+def _look_for_references_block(blocks: List[Block]):
+    """Heuristic to find the start of the References section in a list of Blocks.
+
+    Returns the index of the block that starts the References section, or None if not found.
+    """
+    idx = -1
+    found = False
+    for i, b in enumerate(blocks):
+        if b.text.strip().lower() in ("references", "bibliography"):
+            idx = i
+        if b.text.strip().lower().startswith("references\n") or b.text.strip().lower().startswith("bibliography\n"):
+            idx = i
+        if "references" in b.text.strip().lower()[:20] or "bibliography" in b.text.strip().lower()[:20]:
+            idx = i
+    if idx != -1:
+        found = True
+    return (idx, found)
 
 
 def process_pdf(processor_name: str, pdf_path: Path, metadata: dict=None, maxpages: int=15) -> List[Block]:
@@ -130,12 +145,12 @@ def process_pdf(processor_name: str, pdf_path: Path, metadata: dict=None, maxpag
 
     reader = PdfReader(str(pdf_path))
     page_count = len(reader.pages)
-
-
+    logger.info(f"PDF {pdf_path} has {page_count} pages")
+ 
     if page_count <= maxpages:
         with open(pdf_path, "rb") as f:
             pdf_bytes = f.read()
-        blocks = process_small_pdf(client=client, processor_name=processor_name, pdf_name=str(pdf_path), pdf_bytes=pdf_bytes, metadata=metadata)
+        blocks, _ = process_small_pdf(client=client, processor_name=processor_name, pdf_name=pdf_path.name, pdf_bytes=pdf_bytes, metadata=metadata)
     elif page_count > maxpages:
         logger.info("Large PDF (%d pages) detected; splitting into single-page requests", page_count)
         
@@ -148,47 +163,13 @@ def process_pdf(processor_name: str, pdf_path: Path, metadata: dict=None, maxpag
             writer.write(buf)
             buf.seek(0)
             pdf_bytes = buf.read()
-            blocks.extend(process_small_pdf(client=client, processor_name=processor_name, pdf_name=str(pdf_path), pdf_bytes=pdf_bytes, metadata=metadata, page_number=i+1))
+            new_blocks, ref_found = process_small_pdf(client=client, processor_name=processor_name, pdf_name=pdf_path.name, pdf_bytes=pdf_bytes, metadata=metadata, page_number=i+1)
+            blocks.extend(new_blocks)
+            if ref_found:
+                logger.info(f"Stopping early at page {i+1} due to References section")
+                break
     
     return blocks
-
-
-# # normalized_vertices can be different types depending on the client/runtime:
-# # - protobuf message with to_dict()
-# # - an object with .x and .y attributes
-# # - a plain mapping/dict
-# def _vertex_to_dict(v):
-#     try:
-#         # some client objects expose to_dict()
-#         if hasattr(v, "to_dict"):
-#             logger.debug('Using to_dict() for vertex')
-#             return v.to_dict()
-#     except Exception:
-#         pass
-#     # proto-like objects often have .x and .y
-#     if hasattr(v, "x") and hasattr(v, "y"):
-#         try:
-#             logger.debug('Using .x and .y attributes for vertex')
-#             return {"x": float(v.x), "y": float(v.y)}
-#         except Exception:
-#             return {"x": v.x, "y": v.y}
-#     # mapping-like
-#     if hasattr(v, "get"):
-#         x = v.get("x")
-#         y = v.get("y")
-#         logger.debug('Using .get() for vertex')
-#         if x is not None and y is not None:
-#             return {"x": float(x), "y": float(y)}
-#     # last resort: try to use __dict__ or string
-#     try:
-#         d = dict(v.__dict__)
-#         if "x" in d and "y" in d:
-#             return {"x": d.get("x"), "y": d.get("y")}
-#     except Exception:
-#         pass
-#     # Give up and return a string representation to avoid crashes
-#     return {"x": None, "y": None, "raw": str(v)}
-
 
 def blocks_to_jsonl(blocks: List[Block], out_path: Path, write_bbox: bool=False):
     with out_path.open("w", encoding="utf-8") as fh:
@@ -209,17 +190,16 @@ def get_processor_name():
 
 def main():
 
-
     p = argparse.ArgumentParser()
     p.add_argument("--input", default='data/raw/papers/2020.emnlp-main.550.pdf', help="Path to input PDF, directory containing PDFs, or TSV file of PDF paths and corresponding metadata")
-    p.add_argument("--out", default='data/processed/docai_example.jsonl', help="Output JSONL path")
+    p.add_argument("--output", default='data/processed/docai_example.jsonl', help="Output JSONL path")
     args = p.parse_args()
 
     inp = Path(args.input)
     if not inp.exists():
         logger.error("Input not found: %s", inp)
         raise SystemExit(2)
-    out = Path(args.out)
+    out = Path(args.output)
     
     processor = get_processor_name()
     
@@ -236,10 +216,8 @@ def main():
         blocks.extend(process_pdf(processor_name=processor, pdf_path=inp))
     elif inp.is_file() and inp.suffix.lower() == ".tsv":
         file_data = pd.read_csv(inp, sep="\t")
-        #with inp.open() as f:
-        #    urls = [ln.strip() for ln in f if ln.strip()]
-        for i, row in tqdm(file_data.iterrows(), desc="PDFs"):
-            pdf = row['pdf']  # assuming the TSV has a column named 'pdf'
+        for _, row in tqdm(file_data.iterrows(), desc="PDFs"):
+            pdf = row['pdf_path']  # assuming the TSV has a column named 'pdf_path'
             try:
                 blocks.extend(process_pdf(processor_name=processor, pdf_path=Path(pdf), metadata=row.to_dict()))
             except Exception as e:
@@ -247,7 +225,6 @@ def main():
     else:
         raise SystemExit("Input must be a PDF, a folder, or a tsv file with PDFs and metadata")
 
-    #blocks = process_pdf_sync(processor_name, inp)
     blocks_to_jsonl(blocks, out, write_bbox=False)
     logger.info("Wrote %d blocks to %s", len(blocks), out)
 
