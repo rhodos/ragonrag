@@ -37,7 +37,7 @@ load_dotenv()
 @dataclass
 class Block:
     page: int
-    bbox: dict
+    bbox: List[Dict[str, float]]
     text: str
     doc: str
     metadata: Optional[Dict[str, Any]] = None
@@ -54,7 +54,7 @@ def get_text_for_anchor(document: documentai.Document, text_anchor) -> str:
     return "".join(out)
 
 
-def process_small_pdf(client, processor_name: str, pdf_name: str, pdf_bytes, metadata=None, page_number=None) -> Tuple[List[Block], bool]:
+def process_small_pdf(client, processor_name: str, pdf_name: str, pdf_bytes, metadata=None, page_offset: int=0) -> Tuple[List[Block], bool]:
     """Process a PDF via Document AI sync API and return ordered blocks.
 
     Returns a list of Block(page, bbox, text). Bbox is normalized vertices list.
@@ -74,13 +74,11 @@ def process_small_pdf(client, processor_name: str, pdf_name: str, pdf_bytes, met
     logger.info(f"Document AI returned {num_pages} pages for {pdf_name}")
 
     for p in doc.pages:
-        
-        if not page_number:
-            page_num = int(p.page_number)
-            if num_pages == 1:
-                logger.warning(f"Single-page document {pdf_name}, did you forget to pass page_number param?")
-        else:
-            page_num = page_number
+        # Document AI returns page_number starting at 1 for the returned document. If we
+        # processed a chunk of the original PDF, apply a page_offset to map to the
+        # original global page numbers.
+        local_page_num = int(p.page_number)
+        page_num = int(page_offset) + local_page_num
         
         # Use blocks and paragraphs where available, fallback to lines
         candidates = list(p.blocks or [])
@@ -136,10 +134,10 @@ def _look_for_references_block(blocks: List[Block]):
     return (idx, found)
 
 
-def process_pdf(processor_name: str, pdf_path: Path, metadata: dict=None, maxpages: int=15) -> List[Block]:
+def process_pdf(processor_name: str, pdf_path: Path, metadata: Optional[Dict[str, Any]]=None, maxpages: int=15) -> List[Block]:
 
     # If the PDF is large, some Document AI sync endpoints may fail; for robustness,
-    # split into single-page PDFs and call the API per page when necessary.
+    # split into chunks of up to `maxpages` pages and call the API per chunk when necessary.
 
     client = documentai.DocumentProcessorServiceClient()
 
@@ -152,21 +150,24 @@ def process_pdf(processor_name: str, pdf_path: Path, metadata: dict=None, maxpag
             pdf_bytes = f.read()
         blocks, _ = process_small_pdf(client=client, processor_name=processor_name, pdf_name=pdf_path.name, pdf_bytes=pdf_bytes, metadata=metadata)
     elif page_count > maxpages:
-        logger.info("Large PDF (%d pages) detected; splitting into single-page requests", page_count)
-        
+        logger.info("Large PDF (%d pages) detected; splitting into chunks of up to %d pages", page_count, maxpages)
+
         blocks: List[Block] = []
-        # iterate pages and process each as a separate PDF in-memory
-        for i in range(page_count):
+        # iterate chunks and process each as an in-memory PDF
+        for start in range(0, page_count, maxpages):
+            end = min(start + maxpages, page_count)
             writer = PdfWriter()
-            writer.add_page(reader.pages[i])
+            for i in range(start, end):
+                writer.add_page(reader.pages[i])
             buf = io.BytesIO()
             writer.write(buf)
             buf.seek(0)
             pdf_bytes = buf.read()
-            new_blocks, ref_found = process_small_pdf(client=client, processor_name=processor_name, pdf_name=pdf_path.name, pdf_bytes=pdf_bytes, metadata=metadata, page_number=i+1)
+            # Pass page_offset=start so returned page numbers are mapped to global pages
+            new_blocks, ref_found = process_small_pdf(client=client, processor_name=processor_name, pdf_name=pdf_path.name, pdf_bytes=pdf_bytes, metadata=metadata, page_offset=start)
             blocks.extend(new_blocks)
             if ref_found:
-                logger.info(f"Stopping early at page {i+1} due to References section")
+                logger.info(f"Stopping early at chunk starting page {start+1} due to References section")
                 break
     
     return blocks
