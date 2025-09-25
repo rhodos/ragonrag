@@ -95,13 +95,13 @@ def process_small_pdf(client, processor_name: str, pdf_name: str, pdf_bytes, met
             bbox = [_vertex_to_dict(v) for v in verts]
             blocks.append(Block(page=page_num, bbox=bbox, text=text, metadata=metadata, doc=pdf_name))
 
-    # Sort by page, top->left using bbox centroid
-    def centroid_yx(bb):
-        ys = [v.get("y", 0) for v in bb]
-        xs = [v.get("x", 0) for v in bb]
-        return (sum(ys) / len(ys), sum(xs) / len(xs))
+    # # Sort by page, top->left using bbox centroid
+    # def centroid_yx(bb):
+    #     ys = [v.get("y", 0) for v in bb]
+    #     xs = [v.get("x", 0) for v in bb]
+    #     return (sum(ys) / len(ys), sum(xs) / len(xs))
 
-    blocks.sort(key=lambda b: (b.page, *centroid_yx(b.bbox)))
+    # blocks.sort(key=lambda b: (b.page, *centroid_yx(b.bbox)))
 
     (idx, ref_found) = _look_for_references_block(blocks)
     if ref_found:
